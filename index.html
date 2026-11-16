@@ -533,7 +533,7 @@ const ROBOTS = {
   },
 
   phantom: {
-    name: "팬텀", desc: "스텔스 각진 장갑", swatch: "#2a2c33",
+    name: "팬텀", desc: "스텔스 각진 장갑", swatch: "#a7aebb",
     dims: {
       hipH: 1.0, chestY: 0.13, neckY: 0.46, headY: 0.05,
       shoulderX: 0.23, shoulderY: 0.34, upperArm: 0.3, foreArm: 0.28, hand: 0.11,
@@ -541,10 +541,11 @@ const ROBOTS = {
       footDrop: 0.075, toeZ: 0.2, heelZ: 0.07,
     },
     dress(J, D) {
-      const matte = std(0x17181c, 0.78, 0.35, { flatShading: true });
-      const plate = std(0x2c2f37, 0.38, 0.75, { flatShading: true });
-      const core = std(0x0b0c0f, 0.35, 0.85, { flatShading: true });
-      const seam = glow(0xff3b4f, 1.8);
+      // light titanium plates over a mid-grey frame, with graphite joints for contrast
+      const matte = std(0x7c8592, 0.6, 0.45, { flatShading: true });
+      const plate = std(0xc9ced8, 0.3, 0.65, { flatShading: true });
+      const core = std(0x3a3f4a, 0.35, 0.8, { flatShading: true });
+      const seam = glow(0xff3b4f, 2.4);
       const hex = (rt, rb, h, mat, x, y, z, sides = 6) => mesh(new THREE.CylinderGeometry(rt, rb, h, sides), mat, x, y, z);
       J.pelvis.add(hex(0.15, 0.11, 0.15, matte, 0, -0.02, 0));
       J.chest.add(hex(0.08, 0.1, 0.15, core, 0, 0.05, 0));
