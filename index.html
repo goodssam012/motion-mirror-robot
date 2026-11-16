@@ -932,6 +932,49 @@ function aim(n, restDir, worldDir, valid) {
   n.quaternion.slerp(_qt, SLERP);
 }
 
+// wrist: full hand orientation (bend + palm twist) from the wrist, index and pinky landmarks.
+// Rest pose = hand hanging down (-Y) with the index knuckle in front of the pinky (+Z).
+const HAND_VIS = 0.3;                      // hand points are less confident than body points
+const WRIST_BEND = 1.3;                    // rad (~75°) bend limit, keeps noisy hand points from snapping the wrist
+const WRIST_TWIST = 2.0;                   // rad (~115°) palm turn limit; palm-down/up is ~90° from the forearm's neutral
+const _hd = new THREE.Vector3(), _hy = new THREE.Vector3(), _hz = new THREE.Vector3(), _hx = new THREE.Vector3();
+const _qw = new THREE.Quaternion(), _qi = new THREE.Quaternion(), _qs = new THREE.Quaternion(), _qtw = new THREE.Quaternion();
+// limit a rotation's angle by slerping it toward identity
+function capAngle(q, max) {
+  if (q.w < 0) q.set(-q.x, -q.y, -q.z, -q.w);
+  const a = 2 * Math.acos(Math.min(1, q.w));
+  if (a > max) q.copy(_qi.identity().slerp(q, max / a));
+  return q;
+}
+function aimWrist(n, wr, pk, ix) {
+  let ok = [wr, pk, ix].every((i) => VIS[i] > HAND_VIS);
+  if (ok) {
+    _hd.addVectors(P[pk], P[ix]).multiplyScalar(0.5).sub(P[wr]);   // wrist -> knuckles
+    _hz.subVectors(P[ix], P[pk]);                                   // pinky -> index
+    ok = _hd.lengthSq() > 1e-6 && _hz.lengthSq() > 1e-6;
+  }
+  if (ok) {
+    _hy.copy(_hd).normalize().negate();
+    _hz.addScaledVector(_hy, -_hz.dot(_hy));
+    ok = _hz.lengthSq() > 1e-8;
+  }
+  if (!ok) { n.quaternion.slerp(_qi.identity(), SLERP * 0.5); return; }
+  _hz.normalize();
+  _hx.crossVectors(_hy, _hz);
+  _m.makeBasis(_hx, _hy, _hz);
+  _qw.setFromRotationMatrix(_m);
+  n.parent.getWorldQuaternion(_qp).invert();
+  _qt.multiplyQuaternions(_qp, _qw);
+  // swing-twist split around the hand's long axis (local Y), each limited on its own
+  _qtw.set(0, _qt.y, 0, _qt.w);
+  if (_qtw.lengthSq() < 1e-8) _qtw.identity(); else _qtw.normalize();
+  _qs.copy(_qt).multiply(_qw.copy(_qtw).invert());
+  capAngle(_qtw, WRIST_TWIST);
+  capAngle(_qs, WRIST_BEND);
+  _qt.multiplyQuaternions(_qs, _qtw);
+  n.quaternion.slerp(_qt, SLERP);
+}
+
 const hipMid = new THREE.Vector3(), shMid = new THREE.Vector3(), up = new THREE.Vector3(), tmp = new THREE.Vector3();
 const qPelvis = new THREE.Quaternion(), qChest = new THREE.Quaternion(), qHead = new THREE.Quaternion();
 
@@ -969,7 +1012,7 @@ function applyPose(upper = false) {
   for (const [s, sh, el, wr, pk, ix] of [["L", 11, 13, 15, 17, 19], ["R", 12, 14, 16, 18, 20]]) {
     aim(J["shoulder" + s], DOWN, tmp.subVectors(P[el], P[sh]), seen(sh, el));
     aim(J["elbow" + s], DOWN, tmp.subVectors(P[wr], P[el]), seen(el, wr));
-    aim(J["wrist" + s], DOWN, mid(pk, ix, _v1).sub(P[wr]).clone(), seen(wr, pk, ix));
+    aimWrist(J["wrist" + s], wr, pk, ix);
   }
   // legs (held straight in upper-body mode)
   for (const [s, hp, kn, an, he, to] of [["L", 23, 25, 27, 29, 31], ["R", 24, 26, 28, 30, 32]]) {
@@ -1757,6 +1800,7 @@ if (isHosted) {
 // 개발용: 주소 끝에 #debug 를 붙이면 콘솔에서 가짜 포즈를 넣어 볼 수 있음
 if (location.hash === "#debug") {
   window.__feedPose = (world, norm = world) => { running = true; handlePose(world, norm, performance.now()); };
+  window.__joint = (name) => J[name].quaternion.toArray().map((v) => +v.toFixed(3));
 }
 
 if (!window.isSecureContext) {
