@@ -363,7 +363,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import { PoseLandmarker, HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
 const WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const MODEL_URL = (v) =>
@@ -480,6 +480,44 @@ function taper(parent, len, rTop, rBot, mat, seg = 20) {
   parent.add(mesh(new THREE.CylinderGeometry(rTop, rBot, len, seg), mat, 0, -len / 2, 0));
   parent.add(ball(rBot, mat, 0, -len, 0, 1, 1, 1, seg));
 }
+// Claw hand hung on the wrist: a palm block, two fingers on the back of the hand and an opposing thumb
+// on the palm side. Each digit has two hinged segments; setClaw() opens (grip 0) or closes (grip 1) them.
+// Rest pose: hand hangs down -Y, palm faces the body (-sx on X), index side toward +Z.
+function claw(J, s, sx, D, { shell, joint, tip = shell, size = 0.09, round = true }) {
+  const w = J["wrist" + s];
+  const palmL = D.hand * 0.45, px = size * 0.5, pz = size * 0.95, t = size * 0.25;
+  const box = (bw, bh, bd, mat, x, y, z) => round
+    ? rbox(bw, bh, bd, Math.min(bw, bh, bd) * 0.3, mat, x, y, z)
+    : mesh(new THREE.BoxGeometry(bw, bh, bd), mat, x, y, z);
+  w.add(box(px, palmL, pz, shell, 0, -palmL / 2 - 0.012, 0));
+  const baseY = -palmL - 0.012, len = D.hand * 0.95;
+  const digits = [];
+  const add = (side, z, l, width) => {
+    const h1 = node(w, side * sx * px * 0.5, baseY, z);
+    h1.add(ball(t * 0.6, joint, 0, 0, 0, 1, 1, 1, 12));
+    h1.add(box(t, l * 0.55, width, shell, 0, -l * 0.275, 0));
+    const h2 = node(h1, 0, -l * 0.55, 0);
+    h2.add(ball(t * 0.52, joint, 0, 0, 0, 1, 1, 1, 12));
+    h2.add(box(t * 0.85, l * 0.45, width * 0.9, tip, 0, -l * 0.225, 0));
+    digits.push({ h1, h2, k: -side * sx, thumb: side < 0 });   // k: rotation sign that curls toward the palm
+  };
+  add(1, pz * 0.25, len, pz * 0.42);
+  add(1, -pz * 0.25, len, pz * 0.42);
+  add(-1, 0, len * 0.82, pz * 0.48);
+  J["claw" + s] = digits;
+  setClaw(digits, 0.2);
+}
+function setClaw(digits, g) {
+  if (!digits) return;
+  for (const d of digits) {
+    // open: digits flare apart; closed: hooked tips meet in the middle like a pincer
+    const a1 = THREE.MathUtils.lerp(-0.5, 0.05, g);
+    const a2 = THREE.MathUtils.lerp(0.08, 0.5, g);
+    d.h1.rotation.z = d.k * a1;
+    d.h2.rotation.z = d.k * a2;
+  }
+}
+
 // partial sphere shell facing +Z (visors)
 function visorShell(r, mat, y, width = 1.4, height = 0.6, tilt = 0) {
   const g = new THREE.SphereGeometry(r, 40, 20, Math.PI / 2 - width / 2, width, Math.PI / 2 - height / 2 + tilt, height);
@@ -519,7 +557,7 @@ const ROBOTS = {
         J["elbow" + s].add(ball(0.043, gold));
         taper(J["elbow" + s], D.foreArm, 0.041, 0.033, pearl);
         J["wrist" + s].add(ball(0.031, gold));
-        J["wrist" + s].add(rbox(0.05, D.hand, 0.075, 0.022, pearl, 0, -D.hand / 2 - 0.02, 0));
+        claw(J, s, sx, D, { shell: pearl, joint: gold, size: 0.085 });
         J["hip" + s].add(ball(0.062, gold));
         taper(J["hip" + s], D.thigh, 0.066, 0.05, pearl);
         J["knee" + s].add(ball(0.052, gold));
@@ -568,7 +606,7 @@ const ROBOTS = {
         J["elbow" + s].add(hex(0.06, 0.045, D.foreArm * 0.9, plate, 0, -D.foreArm / 2, 0));
         J["elbow" + s].add(mesh(new THREE.BoxGeometry(0.006, D.foreArm * 0.55, 0.006), seam, 0, -D.foreArm / 2, 0.054));
         J["wrist" + s].add(mesh(new THREE.IcosahedronGeometry(0.035, 0), core));
-        J["wrist" + s].add(mesh(new THREE.BoxGeometry(0.06, D.hand, 0.08), matte, 0, -D.hand / 2 - 0.02, 0));
+        claw(J, s, sx, D, { shell: plate, joint: core, tip: red, size: 0.09, round: false });
         J["hip" + s].add(mesh(new THREE.IcosahedronGeometry(0.06, 0), core));
         J["hip" + s].add(hex(0.075, 0.055, D.thigh, matte, 0, -D.thigh / 2, 0));
         J["hip" + s].add(mesh(new THREE.BoxGeometry(0.1, D.thigh * 0.55, 0.03), plate, 0, -D.thigh * 0.42, 0.065));
@@ -614,13 +652,13 @@ const ROBOTS = {
       visor.scale.set(0.91, 1.11, 1.01);
       J.head.add(visor);
       J.head.add(mesh(new THREE.TorusGeometry(0.15, 0.006, 12, 64), core, 0, 0.15, -0.11));   // halo ring
-      for (const [s] of SIDES) {
+      for (const [s, sx] of SIDES) {
         J["shoulder" + s].add(ball(0.056, satin));
         taper(J["shoulder" + s], D.upperArm, 0.041, 0.033, chrome);
         J["elbow" + s].add(ball(0.038, satin));
         taper(J["elbow" + s], D.foreArm, 0.036, 0.027, chrome);
         J["wrist" + s].add(mesh(new THREE.TorusGeometry(0.03, 0.006, 10, 28), core).rotateX(Math.PI / 2));
-        J["wrist" + s].add(mesh(capsule(D.hand, 0.024), chrome, 0, -D.hand / 2 - 0.012, 0));
+        claw(J, s, sx, D, { shell: chrome, joint: satin, tip: core, size: 0.08 });
         J["hip" + s].add(ball(0.056, satin));
         taper(J["hip" + s], D.thigh, 0.056, 0.042, chrome);
         J["knee" + s].add(ball(0.045, satin));
@@ -677,7 +715,7 @@ const ROBOTS = {
         J["elbow" + s].add(mesh(new THREE.BoxGeometry(0.13, D.foreArm * 0.8, 0.15), white, 0, -D.foreArm / 2, 0));
         J["elbow" + s].add(mesh(new THREE.BoxGeometry(0.135, 0.04, 0.155), navy, 0, -D.foreArm * 0.85, 0));
         J["wrist" + s].add(mesh(new THREE.SphereGeometry(0.045, 12, 10), frame));
-        J["wrist" + s].add(mesh(new THREE.BoxGeometry(0.09, D.hand, 0.1), frame, 0, -D.hand / 2 - 0.02, 0));
+        claw(J, s, sx, D, { shell: white, joint: frame, tip: navy, size: 0.12, round: false });
         segment(J["hip" + s], D.thigh, 0.075, frame, frame);
         J["hip" + s].add(mesh(new THREE.BoxGeometry(0.15, 0.3, 0.17), white, 0, -0.21, 0));
         J["knee" + s].add(mesh(new THREE.SphereGeometry(0.07, 14, 10), frame));
@@ -724,7 +762,7 @@ const ROBOTS = {
         J["elbow" + s].add(mesh(new THREE.SphereGeometry(0.05, 12, 10), under));
         J["elbow" + s].add(mesh(new THREE.CylinderGeometry(0.056, 0.046, D.foreArm * 0.8, 14), copper, 0, -D.foreArm / 2, 0));
         J["elbow" + s].add(mesh(new THREE.TorusGeometry(0.047, 0.007, 8, 24), core, 0, -D.foreArm * 0.9, 0).rotateX(Math.PI / 2));
-        J["wrist" + s].add(mesh(new THREE.BoxGeometry(0.06, D.hand, 0.09), gun, 0, -D.hand / 2 - 0.015, 0));
+        claw(J, s, sx, D, { shell: gun, joint: under, tip: copper, size: 0.09 });
         segment(J["hip" + s], D.thigh, 0.065, gun, under);
         J["hip" + s].add(mesh(new THREE.BoxGeometry(0.14, 0.28, 0.15), gun, 0, -0.2, 0));
         J["knee" + s].add(scaled(new THREE.SphereGeometry(0.06, 14, 10), copper, [0, 0, 0.03], [1, 1, 0.8]));
@@ -766,7 +804,7 @@ const ROBOTS = {
         J["elbow" + s].add(mesh(new THREE.SphereGeometry(0.065, 14, 10), joint));
         J["elbow" + s].add(mesh(new THREE.BoxGeometry(0.13, D.foreArm * 0.85, 0.14), armor, 0, -D.foreArm / 2, 0));
         J["wrist" + s].add(mesh(new THREE.SphereGeometry(0.05, 12, 10), joint));
-        J["wrist" + s].add(mesh(new THREE.BoxGeometry(0.1, D.hand, 0.11), steel, 0, -D.hand / 2 - 0.02, 0));
+        claw(J, s, sx, D, { shell: steel, joint: joint, tip: armor, size: 0.13, round: false });
         segment(J["hip" + s], D.thigh, 0.08, steel, joint);
         J["hip" + s].add(mesh(new THREE.BoxGeometry(0.16, 0.28, 0.17), armor, 0, -0.2, 0));
         J["knee" + s].add(mesh(new THREE.SphereGeometry(0.075, 14, 10), joint));
@@ -826,7 +864,7 @@ function setRobot(id) {
   if (id === robot.id) return;
   const next = buildRobot(id);
   // carry the current pose over so the swap is seamless
-  for (const k of Object.keys(J)) next.J[k].quaternion.copy(J[k].quaternion);
+  for (const k of Object.keys(J)) if (J[k].isObject3D && next.J[k]?.isObject3D) next.J[k].quaternion.copy(J[k].quaternion);
   next.root.position.copy(root.position);
   scene.remove(root);
   disposeRobot(robot);
@@ -893,6 +931,78 @@ function ingestPose(world, norm, tMs) {
   const bodyX = (norm[a].x + norm[b].x) / 2 - 0.5;
   rootXTarget = rootXFilter.filter(sx * bodyX * 2.4, t);
   poseTime = tMs;
+}
+
+/* ---------- Hands (upper-body mode): finger grip + precise palm direction ---------- */
+const HAND_MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+const REST_GRIP = 0.2;                     // relaxed, slightly closed claw when no hand data
+let handLm = null, handLoading = null, handFrame = 0;
+// latest hand-model measurement per robot side; palm vectors are in three.js space relative to the wrist
+const HANDS = {
+  L: { t: -1e9, grip: REST_GRIP, toPinky: new THREE.Vector3(), toIndex: new THREE.Vector3(), norm: null },
+  R: { t: -1e9, grip: REST_GRIP, toPinky: new THREE.Vector3(), toIndex: new THREE.Vector3(), norm: null },
+};
+const gripLive = { L: -1, R: -1 };         // -1 = no fresh hand data this frame
+const gripNow = { L: REST_GRIP, R: REST_GRIP };
+
+function ensureHandLandmarker() {
+  if (handLm || handLoading || !vision) return;
+  const opts = (delegate) => ({
+    baseOptions: { modelAssetPath: HAND_MODEL, delegate },
+    runningMode: "VIDEO", numHands: 2,
+    minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
+  });
+  handLoading = HandLandmarker.createFromOptions(vision, opts("GPU"))
+    .catch(() => HandLandmarker.createFromOptions(vision, opts("CPU")))
+    .then((h) => { handLm = h; })
+    .catch((e) => console.warn("hand model failed", e))
+    .finally(() => { handLoading = null; });
+}
+
+const d3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+// 0 = open hand, 1 = fist: how far the fingertips reach past the knuckles, relative to the palm
+function measureGrip(wl) {
+  let r = 0;
+  for (const [mcp, tip] of [[5, 8], [9, 12], [13, 16], [17, 20]]) r += d3(wl[tip], wl[0]) / Math.max(d3(wl[mcp], wl[0]), 1e-4);
+  return THREE.MathUtils.clamp((1.7 - r / 4) / (1.7 - 1.1), 0, 1);
+}
+
+function ingestHands(res, norm, tMs) {
+  if (!res?.landmarks?.length) return;
+  const sx = settings.mirror ? -1 : 1;
+  // pair each detected hand with the nearer pose wrist (raw image landmarks 15 / 16)
+  const cands = res.landmarks.map((lm, i) => {
+    const d15 = Math.hypot(lm[0].x - norm[15].x, lm[0].y - norm[15].y);
+    const d16 = Math.hypot(lm[0].x - norm[16].x, lm[0].y - norm[16].y);
+    return { i, raw: d15 <= d16 ? 15 : 16, d: Math.min(d15, d16) };
+  }).sort((a, b) => a.d - b.d);
+  const used = new Set();
+  for (const c of cands) {
+    if (used.has(c.raw) || c.d > 0.15) continue;
+    used.add(c.raw);
+    const pIdx = settings.mirror ? SWAP[c.raw] : c.raw;
+    const H = HANDS[pIdx === 15 ? "L" : "R"];
+    const wl = res.worldLandmarks[c.i], w0 = wl[0];
+    const rel = (p, out) => out.set(sx * (p.x - w0.x), -(p.y - w0.y), -(p.z - w0.z));
+    rel(wl[17], H.toPinky);
+    rel(wl[5], H.toIndex);
+    H.grip = measureGrip(wl);
+    H.norm = res.landmarks[c.i];
+    H.t = tMs;
+  }
+}
+// after ingestPose: swap the pose model's rough hand points for the hand model's palm vectors
+function applyHands(tMs) {
+  for (const [s, wr, pk, ix] of [["L", 15, 17, 19], ["R", 16, 18, 20]]) {
+    const H = HANDS[s];
+    const fresh = settings.upper && tMs - H.t < 300;
+    if (fresh) {
+      P[pk].copy(P[wr]).add(H.toPinky);
+      P[ix].copy(P[wr]).add(H.toIndex);
+      VIS[pk] = VIS[ix] = 1;
+    }
+    gripLive[s] = fresh ? H.grip : -1;
+  }
 }
 
 /* ---------- Retargeting ---------- */
@@ -1148,6 +1258,21 @@ function drawOverlay(lms) {
     octx.arc(p.x * w, p.y * h, Math.max(2.5, w / 150), 0, Math.PI * 2);
     octx.fill();
   }
+  // finger joints from the hand model (upper-body mode)
+  const now = performance.now();
+  octx.lineWidth = Math.max(1.5, w / 320);
+  octx.strokeStyle = "#ffe08a";
+  octx.fillStyle = "#ffe08a";
+  for (const H of [HANDS.L, HANDS.R]) {
+    if (!settings.upper || !H.norm || now - H.t > 300) continue;
+    octx.beginPath();
+    for (const { start, end } of HandLandmarker.HAND_CONNECTIONS) {
+      octx.moveTo(H.norm[start].x * w, H.norm[start].y * h);
+      octx.lineTo(H.norm[end].x * w, H.norm[end].y * h);
+    }
+    octx.stroke();
+    for (const p of H.norm) { octx.beginPath(); octx.arc(p.x * w, p.y * h, Math.max(1.5, w / 260), 0, Math.PI * 2); octx.fill(); }
+  }
 }
 
 /* ---------- Full-body framing check ---------- */
@@ -1213,17 +1338,20 @@ function renderGuide(now) {
   }
 }
 
-function handlePose(world, norm, now) {
-  drawOverlay(norm);
-  if (player.clip) return;               // playback owns the robot; ignore the live camera
+function handlePose(world, norm, now, hands = null) {
+  if (player.clip) { drawOverlay(norm); return; }   // playback owns the robot; ignore the live camera
   ingestPose(world, norm, now);
+  if (hands) ingestHands(hands, norm, now);
+  applyHands(now);
   updateFraming(checkFraming(norm), now);
+  drawOverlay(norm);
   recorder.capture(now);
 }
 
 /* ---------- Motion recorder ---------- */
 // A clip stores the filtered landmarks (not robot joint angles), so it can be replayed on any robot.
-// Frame layout: [t(ms), ok(0/1), rootX, x0,y0,z0 … x32,y32,z32, vis0 … vis32]
+// Frame layout: [t(ms), ok(0/1), rootX, x0,y0,z0 … x32,y32,z32, vis0 … vis32, gripL, gripR]
+// (clips made before finger tracking have no grip values: 135 numbers per frame)
 const MAX_REC_MS = 3 * 60 * 1000;
 const round3 = (v) => Math.round(v * 1000) / 1000;
 const fmtTime = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
@@ -1239,6 +1367,7 @@ const recorder = {
     const f = [Math.round(t), bodyOk ? 1 : 0, round3(rootXTarget)];
     for (let i = 0; i < 33; i++) f.push(round3(P[i].x), round3(P[i].y), round3(P[i].z));
     for (let i = 0; i < 33; i++) f.push(Math.round(VIS[i] * 100) / 100);
+    f.push(Math.round(gripLive.L * 100) / 100, Math.round(gripLive.R * 100) / 100);   // claw grip, -1 = none
     this.frames.push(f);
     if (t > MAX_REC_MS) this.finish();
   },
@@ -1285,12 +1414,12 @@ function saveClips() {
 }
 function validClip(c) {
   return c && typeof c.name === "string" && Array.isArray(c.frames) && c.frames.length > 1 &&
-    c.frames.every((f) => Array.isArray(f) && f.length === 3 + 99 + 33 && f.every(Number.isFinite));
+    c.frames.every((f) => Array.isArray(f) && (f.length === 135 || f.length === 137) && f.every(Number.isFinite));
 }
 
 /* ---------- Playback ---------- */
 const player = {
-  clip: null, pos: 0, playing: false, loop: true, idx: 0, last: 0,
+  clip: null, pos: 0, playing: false, loop: true, idx: 0, last: 0, grip: { L: -1, R: -1 },
   open(clip) {
     if (recorder.active) recorder.finish();
     if (exporter.active) exporter.stop(true);
@@ -1346,7 +1475,10 @@ const player = {
       VIS[i] = (k < 0.5 ? a : b)[102 + i];
     }
     rootXTarget = lerp(2);
-    return (k < 0.5 ? a : b)[1] === 1;
+    const near = k < 0.5 ? a : b;
+    this.grip.L = near.length > 135 ? near[135] : -1;
+    this.grip.R = near.length > 135 ? near[136] : -1;
+    return near[1] === 1;
   },
 };
 let lastPlayerUi = 0;
@@ -1525,7 +1657,13 @@ function detect(now) {
   fpsCount++;
   if (now - fpsLast > 1000) { fps = Math.round((fpsCount * 1000) / (now - fpsLast)); fpsCount = 0; fpsLast = now; }
   if (res.worldLandmarks?.length) {
-    handlePose(res.worldLandmarks[0], res.landmarks[0], now);
+    // fingers only in upper-body mode (hands are big enough there); every other frame to spare the phone
+    let hands = null;
+    if (settings.upper && !player.clip) {
+      if (!handLm) ensureHandLandmarker();
+      else if ((++handFrame & 1) === 0) hands = handLm.detectForVideo(video, now);
+    }
+    handlePose(res.worldLandmarks[0], res.landmarks[0], now, hands);
     if (player.clip) setStatus("녹화 재생 중", "track");
     else if (bodyOk) setStatus(`${recorder.active ? "녹화 중" : "추적 중"} · ${fps} fps`, "track");
     else setStatus(settings.upper ? "상반신이 보이지 않음" : "전신이 보이지 않음", "lost");
@@ -1552,6 +1690,13 @@ function frame() {
     if (recorder.active && now - lastPlayerUi > 500) { renderRecButton(now); lastPlayerUi = now; }
   }
   if (tracking) applyPose(upper); else idlePose(clock.getElapsedTime());
+  // claw fingers: live grip, recorded grip during playback, otherwise relaxed
+  const gripSrc = player.clip ? player.grip : tracking ? gripLive : null;
+  for (const s of ["L", "R"]) {
+    const g = gripSrc && gripSrc[s] >= 0 ? gripSrc[s] : REST_GRIP;
+    gripNow[s] += (g - gripNow[s]) * 0.3;
+    setClaw(J["claw" + s], gripNow[s]);
+  }
   renderGuide(now);
   const tx = tracking && settings.follow ? THREE.MathUtils.clamp(rootXTarget, -2, 2) : 0;
   root.position.x += (tx - root.position.x) * 0.15;
@@ -1799,7 +1944,13 @@ if (isHosted) {
 
 // 개발용: 주소 끝에 #debug 를 붙이면 콘솔에서 가짜 포즈를 넣어 볼 수 있음
 if (location.hash === "#debug") {
-  window.__feedPose = (world, norm = world) => { running = true; handlePose(world, norm, performance.now()); };
+  window.__feedPose = (world, norm = world, hands = null) => { running = true; handlePose(world, norm, performance.now(), hands); };
+  window.__grip = () => ({ ...gripNow });
+  window.__lookAt = (joint, dist = 0.45, dir = [0.25, 0.12, 1]) => {   // move the camera close to a joint
+    const p = J[joint].getWorldPosition(new THREE.Vector3());
+    controls.target.copy(p);
+    camera.position.copy(p).add(new THREE.Vector3(...dir).normalize().multiplyScalar(dist));
+  };
   window.__joint = (name) => J[name].quaternion.toArray().map((v) => +v.toFixed(3));
 }
 
