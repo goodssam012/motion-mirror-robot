@@ -1,0 +1,4 @@
+cert/
+.claude/
+node_modules/
+*.log
